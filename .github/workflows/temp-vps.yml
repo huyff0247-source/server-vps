@@ -53,31 +53,37 @@ jobs:
     timeout-minutes: 360
 
     steps:
-      - name: 📋 Hiển thị thông tin
+      - name: 📋 Hiển thị thông tin ban đầu
         run: |
           echo "╔═══════════════════════════════════════╗"
           echo "║     🐧 LINUX VPS - GitHub Actions    ║"
           echo "╠═══════════════════════════════════════╣"
           echo "║ OS       : Ubuntu (ubuntu-latest)    ║"
-          echo "║ Username : ${{ github.event.inputs.username }}"
           echo "║ SSH Port : 22                        ║"
           echo "║ Max Time : 360 phút (6 tiếng)        ║"
           echo "╚═══════════════════════════════════════╝"
 
-      - name: 🔧 Cấu hình SSH Server
+      - name: 🔧 Cấu hình SSH và xác định user thực tế
+        id: setup_user
         run: |
-          # Đặt mật khẩu cho root hoặc user chỉ định
           USERNAME="${{ github.event.inputs.username }}"
           PASSWORD="${{ github.event.inputs.password }}"
 
+          # Xác định username thực tế
           if [ "$USERNAME" = "root" ]; then
+            ACTUAL_USERNAME="root"
             echo "root:$PASSWORD" | sudo chpasswd
           else
-            sudo useradd -m -s /bin/bash "$USERNAME"
-            echo "$USERNAME:$PASSWORD" | sudo chpasswd
-            sudo usermod -aG sudo "$USERNAME"
-            echo "$USERNAME ALL=(ALL) NOPASSWD:ALL" | sudo tee /etc/sudoers.d/$USERNAME
+            ACTUAL_USERNAME="$USERNAME"
+            sudo useradd -m -s /bin/bash "$ACTUAL_USERNAME" 2>/dev/null || true
+            echo "$ACTUAL_USERNAME:$PASSWORD" | sudo chpasswd
+            sudo usermod -aG sudo "$ACTUAL_USERNAME" 2>/dev/null || true
+            echo "$ACTUAL_USERNAME ALL=(ALL) NOPASSWD:ALL" | sudo tee /etc/sudoers.d/$ACTUAL_USERNAME
           fi
+
+          # Lưu vào environment cho các bước sau
+          echo "ACTUAL_USERNAME=$ACTUAL_USERNAME" >> $GITHUB_ENV
+          echo "ACTUAL_PASSWORD=$PASSWORD" >> $GITHUB_ENV
 
           # Cấu hình SSH cho phép đăng nhập bằng password
           sudo sed -i 's/^#*PermitRootLogin.*/PermitRootLogin yes/' /etc/ssh/sshd_config
@@ -87,14 +93,14 @@ jobs:
 
           # Khởi động lại SSH
           sudo systemctl restart sshd || sudo service ssh restart
-          echo "✅ SSH Server đã sẵn sàng!"
+          echo "✅ SSH Server đã sẵn sàng với user: $ACTUAL_USERNAME"
 
       - name: 📦 Cài đặt Tailscale
         run: |
           curl -fsSL https://tailscale.com/install.sh | sh
           echo "✅ Tailscale đã được cài đặt!"
 
-      - name: 🔗 Kết nối Tailscale
+      - name: 🔗 Kết nối Tailscale và hiển thị thông tin đăng nhập
         run: |
           HOSTNAME="${{ github.event.inputs.tailscale_hostname }}"
           if [ -z "$HOSTNAME" ]; then
@@ -107,7 +113,6 @@ jobs:
             --accept-routes \
             --ssh
 
-          # Lấy IP Tailscale
           sleep 5
           TAILSCALE_IP=$(tailscale ip -4 2>/dev/null || ip addr show tailscale0 2>/dev/null | grep -oP 'inet \K[\d.]+' || echo "Đang chờ...")
 
@@ -117,16 +122,16 @@ jobs:
           echo "╠══════════════════════════════════════════════════════╣"
           echo "║  Tailscale IP : $TAILSCALE_IP"
           echo "║  Hostname     : $HOSTNAME"
-          echo "║  Username     : ${{ github.event.inputs.username }}"
-          echo "║  Password     : ********"
-          echo "║  SSH Command  : ssh ${{ github.event.inputs.username }}@$TAILSCALE_IP"
-          echo "║  Hoặc         : ssh ${{ github.event.inputs.username }}@$HOSTNAME"
+          echo "║  Username     : ${{ env.ACTUAL_USERNAME }}"
+          echo "║  Password     : ${{ env.ACTUAL_PASSWORD }}"
+          echo "║  SSH Command  : ssh ${{ env.ACTUAL_USERNAME }}@$TAILSCALE_IP"
+          echo "║  Hoặc         : ssh ${{ env.ACTUAL_USERNAME }}@$HOSTNAME"
           echo "╚══════════════════════════════════════════════════════╝"
 
       - name: ⏳ Giữ VPS chạy (360 phút)
         run: |
           echo "🔄 VPS đang chạy... Thời gian tối đa: 360 phút"
-          echo "📌 Để kết nối, dùng Tailscale IP ở trên"
+          echo "📌 Để kết nối, dùng lệnh SSH với IP và mật khẩu ở trên"
           echo "🛑 Nhấn Cancel workflow để dừng sớm"
           for i in $(seq 1 21600); do
             sleep 10
@@ -151,46 +156,44 @@ jobs:
           Write-Host "║   🪟 WINDOWS VPS - GitHub Actions    ║"
           Write-Host "╠═══════════════════════════════════════╣"
           Write-Host "║ OS       : Windows Server 2022       ║"
-          Write-Host "║ Username : ${{ github.event.inputs.username }}"
           Write-Host "║ RDP Port : 3389                      ║"
           Write-Host "║ Max Time : 360 phút (6 tiếng)        ║"
           Write-Host "╚═══════════════════════════════════════╝"
 
-      - name: 🔧 Cấu hình RDP và tạo User
+      - name: 🔧 Cấu hình RDP và xác định user thực tế
+        id: setup_user
         shell: pwsh
         run: |
-          $username = "${{ github.event.inputs.username }}"
+          $inputUsername = "${{ github.event.inputs.username }}"
           $password = "${{ github.event.inputs.password }}"
 
-          # Nếu user là root/Administrator thì dùng Administrator có sẵn
-          if ($username -eq "root" -or $username -eq "Administrator" -or $username -eq "administrator") {
-            $username = "Administrator"
-            # Đổi mật khẩu Administrator
+          # Xác định username thực tế cho Windows
+          if ($inputUsername -eq "root" -or $inputUsername -eq "Administrator" -or $inputUsername -eq "administrator") {
+            $actualUsername = "Administrator"
             net user Administrator $password
             Write-Host "✅ Đã đặt mật khẩu cho Administrator"
           } else {
-            # Tạo user mới
+            $actualUsername = $inputUsername
             try {
-              net user $username $password /add /fullname:"$username" /passwordchg:no 2>$null
-              net localgroup "Administrators" $username /add
-              net localgroup "Remote Desktop Users" $username /add
-              Write-Host "✅ Đã tạo user: $username và thêm vào nhóm Administrators + Remote Desktop Users"
+              net user $actualUsername $password /add /fullname:"$actualUsername" /passwordchg:no 2>$null
+              net localgroup "Administrators" $actualUsername /add
+              net localgroup "Remote Desktop Users" $actualUsername /add
+              Write-Host "✅ Đã tạo user: $actualUsername và thêm vào nhóm Administrators + Remote Desktop Users"
             } catch {
               Write-Host "⚠️ User có thể đã tồn tại, thử đổi mật khẩu..."
-              net user $username $password
+              net user $actualUsername $password
             }
           }
+
+          # Lưu vào environment cho các bước sau
+          echo "ACTUAL_USERNAME=$actualUsername" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          echo "ACTUAL_PASSWORD=$password" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
           # Bật RDP
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0
           Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
-
-          # Cho phép RDP qua firewall
           netsh advfirewall firewall add rule name="RDP Port 3389" dir=in action=allow protocol=TCP localport=3389
-
-          # Bật Network Level Authentication (tùy chọn - có thể tắt nếu cần)
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "UserAuthentication" -Value 0
-
           Write-Host "✅ RDP đã được bật!"
 
       - name: 📦 Cài đặt Tailscale
@@ -200,7 +203,7 @@ jobs:
           Start-Process -FilePath "tailscale-setup.exe" -ArgumentList "/quiet /norestart" -Wait
           Write-Host "✅ Tailscale đã được cài đặt!"
 
-      - name: 🔗 Kết nối Tailscale
+      - name: 🔗 Kết nối Tailscale và hiển thị thông tin đăng nhập
         shell: pwsh
         run: |
           $hostname = "${{ github.event.inputs.tailscale_hostname }}"
@@ -225,8 +228,8 @@ jobs:
           Write-Host "╠══════════════════════════════════════════════════════╣"
           Write-Host "║  Tailscale IP : $tailscaleIP"
           Write-Host "║  Hostname     : $hostname"
-          Write-Host "║  Username     : $username (từ bước trên)"
-          Write-Host "║  Password     : ********"
+          Write-Host "║  Username     : $env:ACTUAL_USERNAME"
+          Write-Host "║  Password     : $env:ACTUAL_PASSWORD"
           Write-Host "║  RDP Address  : $tailscaleIP`:3389"
           Write-Host "║  Hoặc         : $hostname`:3389"
           Write-Host "╚══════════════════════════════════════════════════════╝"
@@ -260,54 +263,56 @@ jobs:
           echo "║    🍎 macOS VPS - GitHub Actions     ║"
           echo "╠═══════════════════════════════════════╣"
           echo "║ OS       : macOS (macos-latest)      ║"
-          echo "║ Username : ${{ github.event.inputs.username }}"
           echo "║ SSH Port : 22                        ║"
           echo "║ Max Time : 360 phút (6 tiếng)        ║"
           echo "╚═══════════════════════════════════════╝"
 
-      - name: 🔧 Cấu hình SSH Server
+      - name: 🔧 Cấu hình SSH và xác định user thực tế
+        id: setup_user
         run: |
           USERNAME="${{ github.event.inputs.username }}"
           PASSWORD="${{ github.event.inputs.password }}"
 
-          # Bật Remote Login (SSH)
+          # Bật Remote Login
           sudo systemsetup -setremotelogin on 2>/dev/null || true
           sudo launchctl load -w /System/Library/LaunchDaemons/ssh.plist 2>/dev/null || true
 
           if [ "$USERNAME" = "root" ]; then
-            # Bật root user và đặt mật khẩu
+            ACTUAL_USERNAME="root"
             sudo dscl . -passwd /Users/root "$PASSWORD"
             sudo dscl . -create /Users/root UserShell /bin/bash
             echo "✅ Đã đặt mật khẩu cho root"
           else
-            # Tạo user mới
-            if ! id "$USERNAME" &>/dev/null; then
-              sudo sysadminctl -addUser "$USERNAME" -fullName "$USERNAME" -password "$PASSWORD" -admin 2>/dev/null || {
-                # Fallback: dùng dscl
+            ACTUAL_USERNAME="$USERNAME"
+            if ! id "$ACTUAL_USERNAME" &>/dev/null; then
+              sudo sysadminctl -addUser "$ACTUAL_USERNAME" -fullName "$ACTUAL_USERNAME" -password "$PASSWORD" -admin 2>/dev/null || {
                 MAX_UID=$(dscl . -list /Users UniqueID | awk '{print $2}' | sort -n | tail -1)
                 NEW_UID=$((MAX_UID + 1))
-                sudo dscl . -create "/Users/$USERNAME"
-                sudo dscl . -create "/Users/$USERNAME" UserShell /bin/bash
-                sudo dscl . -create "/Users/$USERNAME" RealName "$USERNAME"
-                sudo dscl . -create "/Users/$USERNAME" UniqueID "$NEW_UID"
-                sudo dscl . -create "/Users/$USERNAME" PrimaryGroupID 20
-                sudo dscl . -create "/Users/$USERNAME" NFSHomeDirectory "/Users/$USERNAME"
-                sudo dscl . -passwd "/Users/$USERNAME" "$PASSWORD"
-                sudo dscl . -append /Groups/admin GroupMembership "$USERNAME"
-                sudo createhomedir -c -u "$USERNAME" 2>/dev/null || sudo mkdir -p "/Users/$USERNAME" && sudo chown -R "$NEW_UID:20" "/Users/$USERNAME"
+                sudo dscl . -create "/Users/$ACTUAL_USERNAME"
+                sudo dscl . -create "/Users/$ACTUAL_USERNAME" UserShell /bin/bash
+                sudo dscl . -create "/Users/$ACTUAL_USERNAME" RealName "$ACTUAL_USERNAME"
+                sudo dscl . -create "/Users/$ACTUAL_USERNAME" UniqueID "$NEW_UID"
+                sudo dscl . -create "/Users/$ACTUAL_USERNAME" PrimaryGroupID 20
+                sudo dscl . -create "/Users/$ACTUAL_USERNAME" NFSHomeDirectory "/Users/$ACTUAL_USERNAME"
+                sudo dscl . -passwd "/Users/$ACTUAL_USERNAME" "$PASSWORD"
+                sudo dscl . -append /Groups/admin GroupMembership "$ACTUAL_USERNAME"
+                sudo createhomedir -c -u "$ACTUAL_USERNAME" 2>/dev/null || sudo mkdir -p "/Users/$ACTUAL_USERNAME" && sudo chown -R "$NEW_UID:20" "/Users/$ACTUAL_USERNAME"
               }
             else
-              sudo dscl . -passwd "/Users/$USERNAME" "$PASSWORD"
+              sudo dscl . -passwd "/Users/$ACTUAL_USERNAME" "$PASSWORD"
             fi
-            echo "✅ User $USERNAME đã sẵn sàng"
+            echo "✅ User $ACTUAL_USERNAME đã sẵn sàng"
           fi
 
-          # Cấu hình SSH cho phép password auth
+          # Lưu vào environment
+          echo "ACTUAL_USERNAME=$ACTUAL_USERNAME" >> $GITHUB_ENV
+          echo "ACTUAL_PASSWORD=$PASSWORD" >> $GITHUB_ENV
+
+          # Cấu hình SSH cho phép password
           sudo sed -i '' 's/^#*PermitRootLogin.*/PermitRootLogin yes/' /etc/ssh/sshd_config 2>/dev/null || echo "PermitRootLogin yes" | sudo tee -a /etc/ssh/sshd_config
           sudo sed -i '' 's/^#*PasswordAuthentication.*/PasswordAuthentication yes/' /etc/ssh/sshd_config 2>/dev/null || echo "PasswordAuthentication yes" | sudo tee -a /etc/ssh/sshd_config
           sudo sed -i '' 's/^#*ChallengeResponseAuthentication.*/ChallengeResponseAuthentication yes/' /etc/ssh/sshd_config 2>/dev/null || echo "ChallengeResponseAuthentication yes" | sudo tee -a /etc/ssh/sshd_config
 
-          # Khởi động lại SSH
           sudo launchctl unload /System/Library/LaunchDaemons/ssh.plist 2>/dev/null
           sudo launchctl load -w /System/Library/LaunchDaemons/ssh.plist
           echo "✅ SSH Server đã sẵn sàng!"
@@ -317,7 +322,7 @@ jobs:
           curl -fsSL https://tailscale.com/install.sh | sh
           echo "✅ Tailscale đã được cài đặt!"
 
-      - name: 🔗 Kết nối Tailscale
+      - name: 🔗 Kết nối Tailscale và hiển thị thông tin đăng nhập
         run: |
           HOSTNAME="${{ github.event.inputs.tailscale_hostname }}"
           if [ -z "$HOSTNAME" ]; then
@@ -339,16 +344,16 @@ jobs:
           echo "╠══════════════════════════════════════════════════════╣"
           echo "║  Tailscale IP : $TAILSCALE_IP"
           echo "║  Hostname     : $HOSTNAME"
-          echo "║  Username     : ${{ github.event.inputs.username }}"
-          echo "║  Password     : ********"
-          echo "║  SSH Command  : ssh ${{ github.event.inputs.username }}@$TAILSCALE_IP"
-          echo "║  Hoặc         : ssh ${{ github.event.inputs.username }}@$HOSTNAME"
+          echo "║  Username     : ${{ env.ACTUAL_USERNAME }}"
+          echo "║  Password     : ${{ env.ACTUAL_PASSWORD }}"
+          echo "║  SSH Command  : ssh ${{ env.ACTUAL_USERNAME }}@$TAILSCALE_IP"
+          echo "║  Hoặc         : ssh ${{ env.ACTUAL_USERNAME }}@$HOSTNAME"
           echo "╚══════════════════════════════════════════════════════╝"
 
       - name: ⏳ Giữ VPS chạy (360 phút)
         run: |
           echo "🔄 VPS đang chạy... Thời gian tối đa: 360 phút"
-          echo "📌 Để kết nối, dùng Tailscale IP ở trên"
+          echo "📌 Để kết nối, dùng lệnh SSH với IP và mật khẩu ở trên"
           echo "🛑 Nhấn Cancel workflow để dừng sớm"
           for i in $(seq 1 21600); do
             sleep 10
