@@ -177,7 +177,7 @@ jobs:
 
           $securePassword = ConvertTo-SecureString $password -AsPlainText -Force
 
-          # 1. Tạo hoặc cập nhật user với đầy đủ thuộc tính
+          # 1. Tạo hoặc cập nhật user (KHÔNG dùng tham số -Enabled)
           $user = Get-LocalUser -Name $actualUsername -ErrorAction SilentlyContinue
           if (-not $user) {
             New-LocalUser -Name $actualUsername `
@@ -185,8 +185,7 @@ jobs:
               -FullName $actualUsername `
               -PasswordNeverExpires `
               -AccountNeverExpires `
-              -UserMayNotChangePassword `
-              -Enabled
+              -UserMayNotChangePassword
             Write-Host "✅ Đã tạo user mới: $actualUsername"
           } else {
             # Cập nhật mật khẩu và đảm bảo không bị khoá/hết hạn
@@ -202,8 +201,7 @@ jobs:
           Add-LocalGroupMember -Group "Remote Desktop Users" -Member $actualUsername -ErrorAction SilentlyContinue
           Write-Host "✅ Đã thêm $actualUsername vào Administrators & Remote Desktop Users"
 
-          # 3. Cấp quyền “Allow log on through Remote Desktop Services” cho nhóm
-          #    (bảo đảm cả khi ảnh GitHub đã thay đổi chính sách)
+          # 3. Cấp quyền “Allow log on through Remote Desktop Services” bằng secedit
           $tempDir = "$env:TEMP\rdp_grant"
           New-Item -ItemType Directory -Force -Path $tempDir | Out-Null
           $infFile = "$tempDir\rdp.inf"
@@ -224,7 +222,7 @@ jobs:
           Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
           netsh advfirewall firewall add rule name="RDP Port 3389" dir=in action=allow protocol=TCP localport=3389 | Out-Null
 
-          # 5. TẮT Network Level Authentication (tương thích mọi client RDP)
+          # 5. TẮT Network Level Authentication
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "UserAuthentication" -Value 0
           Write-Host "✅ RDP đã bật, NLA đã tắt"
 
@@ -268,20 +266,6 @@ jobs:
           Write-Host "║  Hoặc         : $hostname`:3389"
           Write-Host "╚══════════════════════════════════════════════════════╝"
           Write-Host "📌 Hãy dùng ĐÚNG username và password ở trên để kết nối RDP."
-
-      - name: ⏳ Giữ VPS chạy (360 phút)
-        shell: pwsh
-        run: |
-          Write-Host "🔄 VPS đang chạy... Thời gian tối đa: 360 phút"
-          Write-Host "📌 Dùng Remote Desktop Connection để kết nối qua Tailscale IP"
-          Write-Host "🛑 Nhấn Cancel workflow để dừng sớm"
-          for ($i = 1; $i -le 21600; $i++) {
-            Start-Sleep -Seconds 10
-            if ($i % 180 -eq 0) {
-              $minutes = [math]::Round($i * 10 / 60)
-              Write-Host "⏰ Đã chạy: $minutes phút / 360 phút"
-            }
-          }
 
       - name: ⏳ Giữ VPS chạy (360 phút)
         shell: pwsh
